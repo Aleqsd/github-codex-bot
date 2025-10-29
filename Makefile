@@ -45,11 +45,31 @@ disable:
 update:
 	@echo "⬇️  Pulling latest code..."
 	cd $(WORKDIR) && git pull
+	@echo "📦 Refreshing virtual environment..."
+	python3 -m venv $(VENV)
 	@echo "📦 Updating dependencies..."
-	. $(VENV)/bin/activate && pip install -r requirements.txt
+	. $(VENV)/bin/activate && pip install --upgrade -r requirements.txt
 	@echo "🔁 Restarting service..."
 	sudo systemctl restart $(SERVICE)
 	@echo "✅ Bot updated and restarted."
+
+# --- Local testing helpers ---
+test:
+	@if [ ! -d "$(VENV)" ]; then \
+		echo "📦 Creating virtual environment..."; \
+		python3 -m venv $(VENV); \
+	fi
+	@echo "📦 Ensuring dependencies are installed..."
+	@if ! (. $(VENV)/bin/activate && pip install --upgrade -r requirements.txt); then \
+		echo "⚠️ Could not update dependencies in virtual environment. Continuing with existing environment."; \
+	fi
+	@echo "🧪 Running tests..."
+	@if [ -x "$(VENV)/bin/pytest" ]; then \
+		. $(VENV)/bin/activate && pytest; \
+	else \
+		echo "⚠️ Falling back to system pytest"; \
+		pytest; \
+	fi
 
 # --- View logs ---
 logs:
@@ -63,4 +83,4 @@ clean:
 	rm -rf $(VENV)
 	@echo "🧹 Virtual environment removed."
 
-.PHONY: setup run start stop restart status enable disable update logs local-logs clean
+.PHONY: setup run start stop restart status enable disable update test logs local-logs clean
