@@ -4,12 +4,13 @@ import bot
 class DummyResponse:
     status_code = 201
     text = "ok"
+    ok = True
 
 
 def test_notify_pushover_includes_issue_link(monkeypatch):
     captured = {}
 
-    def fake_post(url, data, timeout):
+    def fake_post(url, data, timeout=None, **_):
         captured["url"] = url
         captured["data"] = data
         return DummyResponse()
@@ -29,7 +30,7 @@ def test_notify_pushover_includes_issue_link(monkeypatch):
 def test_post_github_comment_notifies_with_issue_details(monkeypatch):
     github_call = {}
 
-    def fake_github_post(url, json, headers):
+    def fake_github_post(url, json, headers, timeout=None, **_):
         github_call["url"] = url
         github_call["json"] = json
         github_call["headers"] = headers

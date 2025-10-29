@@ -1,2 +1,12 @@
+# Environment config
 .env
+
+# Python caches
 __pycache__/
+.pytest_cache/
+
+# Virtual environments
+venv/
+
+# Logs
+*.log

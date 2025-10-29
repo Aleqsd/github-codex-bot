@@ -1,9 +1,22 @@
-import os
-import requests
-import openai
-from fastapi import FastAPI, Request
-from dotenv import load_dotenv
+import hashlib
+import hmac
+import json
 import logging
+import os
+import time
+from typing import Callable, Optional
+
+import requests
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
+
+try:
+    from openai import OpenAI
+except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+    OpenAI = None  # type: ignore[assignment]
+    _OPENAI_IMPORT_ERROR = exc
+else:
+    _OPENAI_IMPORT_ERROR = None
 
 load_dotenv()
 
@@ -20,20 +33,56 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # --- Environment variables ---
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-WATCH_USER = os.getenv("WATCH_USER", "GROBimbo")
-REPO = os.getenv("REPO", "Aleqsd/EDH-PodLog")
+
+
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Environment variable '{name}' must be set for github-codex-bot.")
+    return value
+
+
+GITHUB_TOKEN = _require_env("GITHUB_TOKEN")
+OPENAI_API_KEY = _require_env("OPENAI_API_KEY")
+WATCH_USER = _require_env("WATCH_USER")
+REPO = _require_env("REPO")
+GITHUB_WEBHOOK_SECRET = _require_env("GITHUB_WEBHOOK_SECRET")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 PORT = int(os.getenv("PORT", 8082))
+HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "5"))
+HTTP_MAX_RETRIES = int(os.getenv("HTTP_MAX_RETRIES", "3"))
+HTTP_RETRY_BACKOFF_SECONDS = float(os.getenv("HTTP_RETRY_BACKOFF_SECONDS", "0.5"))
 
 # Pushover config
 PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER_KEY")
 PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN")
 
-openai.api_key = OPENAI_API_KEY
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OpenAI else None
 
 
 # --------------- HELPERS ---------------
+
+
+def _send_with_retries(action_name: str, request_factory: Callable[[], requests.Response]) -> Optional[requests.Response]:
+    """Execute an HTTP request with retries and backoff."""
+    for attempt in range(1, HTTP_MAX_RETRIES + 1):
+        try:
+            response = request_factory()
+            return response
+        except requests.RequestException as exc:
+            if attempt < HTTP_MAX_RETRIES:
+                logger.warning(
+                    "%s failed (attempt %s/%s): %s. Retrying after %.2fs",
+                    action_name,
+                    attempt,
+                    HTTP_MAX_RETRIES,
+                    exc,
+                    HTTP_RETRY_BACKOFF_SECONDS * attempt,
+                )
+                time.sleep(HTTP_RETRY_BACKOFF_SECONDS * attempt)
+            else:
+                logger.error("%s exhausted retries: %s", action_name, exc)
+    return None
 
 
 def notify_pushover(issue_title: str, issue_number: int, message: str):
@@ -42,8 +91,9 @@ def notify_pushover(issue_title: str, issue_number: int, message: str):
         logger.warning("⚠️ Pushover not configured, skipping notification.")
         return
     issue_url = f"https://github.com/{REPO}/issues/{issue_number}"
-    try:
-        requests.post(
+    response = _send_with_retries(
+        "Pushover notification",
+        lambda: requests.post(
             "https://api.pushover.net/1/messages.json",
             data={
                 "token": PUSHOVER_API_TOKEN,
@@ -53,11 +103,13 @@ def notify_pushover(issue_title: str, issue_number: int, message: str):
                 "url": issue_url,
                 "url_title": f"View issue #{issue_number}",
             },
-            timeout=5,
-        )
+            timeout=HTTP_TIMEOUT,
+        ),
+    )
+    if response and response.ok:
         logger.info("📱 Pushover notification sent.")
-    except Exception as e:
-        logger.error(f"❌ Pushover notification failed: {e}")
+    elif response is not None:
+        logger.error("❌ Pushover notification failed: %s %s", response.status_code, response.text)
 
 
 def post_github_comment(issue_number: int, issue_title: str, body: str):
@@ -68,13 +120,21 @@ def post_github_comment(issue_number: int, issue_title: str, body: str):
         "Accept": "application/vnd.github+json",
     }
     data = {"body": body}
-    r = requests.post(url, json=data, headers=headers)
-    if r.status_code not in [200, 201]:
-        logger.error(f"❌ Failed to post comment: {r.status_code} {r.text}")
-    else:
-        msg = f"✅ Comment posted to issue #{issue_number}"
-        logger.info(msg)
-        notify_pushover(issue_title, issue_number, msg)
+
+    response = _send_with_retries(
+        "GitHub comment",
+        lambda: requests.post(url, json=data, headers=headers, timeout=HTTP_TIMEOUT),
+    )
+    if not response:
+        logger.error("❌ Failed to post comment: network error")
+        return
+    if response.status_code not in [200, 201]:
+        logger.error("❌ Failed to post comment: %s %s", response.status_code, response.text)
+        return
+
+    msg = f"✅ Comment posted to issue #{issue_number}"
+    logger.info(msg)
+    notify_pushover(issue_title, issue_number, msg)
 
 
 def generate_codex_prompt(issue_text: str) -> str:
@@ -86,12 +146,12 @@ def generate_codex_prompt(issue_text: str) -> str:
         "and deck synchronization.\n\n"
         "Your task:\n"
         "- Rewrite the Product Owner message into a clear, comprehensive, and Codex-ready prompt.\n"
-        "- Preserve every requirement, constraint, data detail, and acceptance criterion from the Product Owner message.\n"
+        "- Preserve every requirement, constraint, data detail, and acceptance criterion from the Product Owner message, and list them under a `Preserved Requirements` heading before the final prompt to confirm coverage.\n"
         "- Expand terse descriptions so the resulting prompt is very detailed, leaving no ambiguity for the implementer.\n"
         "- Keep it fully in English.\n"
         "- Focus on what needs to be implemented (new features, changes, endpoints, data model updates).\n"
         "- Avoid repetition or irrelevant context beyond what is necessary to preserve meaning.\n"
-        "- Output only the Codex prompt, ready to be pasted in terminal.\n"
+        "- Output the preserved requirements list followed by the Codex prompt, ready to be pasted in terminal.\n"
         "\nExample output:\n"
         "Implement a new FastAPI endpoint `POST /decks/import` allowing users to import a deck from Moxfield. "
         "Use the existing `Deck` model in `models/deck.py`. Validate user authentication via `get_current_user()`. "
@@ -101,15 +161,24 @@ def generate_codex_prompt(issue_text: str) -> str:
     )
 
     try:
-        completion = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": issue_text},
+        if not openai_client:
+            raise RuntimeError(f"OpenAI client unavailable: {_OPENAI_IMPORT_ERROR}")
+
+        completion = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            input=[
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": issue_text,
+                },
             ],
             temperature=0.4,
         )
-        return completion.choices[0].message.content.strip()  # type: ignore
+        return completion.output_text.strip()
     except Exception as e:
         logger.error(f"❌ OpenAI API error: {e}")
         return "⚠️ Failed to generate Codex prompt."
@@ -118,9 +187,33 @@ def generate_codex_prompt(issue_text: str) -> str:
 # --------------- WEBHOOK ENDPOINT ---------------
 
 
+def _verify_signature(header_signature: Optional[str], payload: bytes) -> bool:
+    if not header_signature:
+        return False
+    try:
+        algo, signature = header_signature.split("=", 1)
+    except ValueError:
+        return False
+    if algo != "sha256":
+        return False
+    digest = hmac.new(GITHUB_WEBHOOK_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(digest, signature)
+
+
 @app.post("/github-webhook-codex")
 async def github_webhook(request: Request):
-    payload = await request.json()
+    raw_body = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256")
+    if not _verify_signature(signature, raw_body):
+        logger.warning("❌ Invalid GitHub signature, rejecting request.")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.error("❌ Failed to decode JSON payload from GitHub.")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
     event = request.headers.get("X-GitHub-Event", "ping")
 
     logger.info(f"📬 Received event: {event}")

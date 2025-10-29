@@ -27,6 +27,7 @@ WATCH_USER=GROBimbo
 REPO=Aleqsd/EDH-PodLog
 GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxx
 OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+GITHUB_WEBHOOK_SECRET=choose-a-long-random-string
 ```
 
 ### 3. Systemd service
@@ -60,6 +61,12 @@ sudo systemctl start github-codex-bot
 ```bash
 sudo tail -f /var/log/github-codex-bot.log
 ```
+
+### 🔒 Security tips
+
+- Always define `GITHUB_WEBHOOK_SECRET` to enable signature verification; GitHub must use the same secret when sending webhooks.
+- Customize optional HTTP tuning variables (`HTTP_TIMEOUT`, `HTTP_MAX_RETRIES`, `HTTP_RETRY_BACKOFF_SECONDS`) if your deployment needs different resilience settings.
+
 
 ---
 

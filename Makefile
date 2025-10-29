@@ -1,21 +1,31 @@
 # --- GitHub Codex Bot Makefile ---
 
 VENV = venv
-PYTHON = $(VENV)/bin/python
 SERVICE = github-codex-bot
 WORKDIR = /root/github-codex-bot
 
 # --- Setup and install dependencies ---
 setup:
-	@echo "📦 Creating virtual environment and installing dependencies..."
-	python3 -m venv $(VENV)
-	. $(VENV)/bin/activate && pip install -r requirements.txt
-	@echo "✅ Setup complete."
+	@set -e; \
+	if command -v py >/dev/null 2>&1; then PYTHON_CREATE="py -3"; \
+	elif command -v python3 >/dev/null 2>&1; then PYTHON_CREATE="python3"; \
+	elif command -v python >/dev/null 2>&1; then PYTHON_CREATE="python"; \
+	else echo "❌ Could not find python interpreter on PATH"; exit 1; fi; \
+	echo "📦 Creating virtual environment and installing dependencies..."; \
+	rm -rf "$(VENV)"; \
+	eval "$$PYTHON_CREATE -m venv \"$(VENV)\""; \
+	if [ -d "$(VENV)/Scripts" ]; then VENV_PY="$(VENV)/Scripts/python.exe"; else VENV_PY="$(VENV)/bin/python"; fi; \
+	if [ ! -x "$$VENV_PY" ]; then echo "❌ Unable to locate virtualenv python at $$VENV_PY"; exit 1; fi; \
+	"$$VENV_PY" -m pip install -r requirements.txt; \
+	echo "✅ Setup complete."
 
 # --- Start the bot manually ---
 run:
-	@echo "🚀 Starting bot manually..."
-	. $(VENV)/bin/activate && $(PYTHON) bot.py
+	@set -e; \
+	if [ -d "$(VENV)/Scripts" ]; then VENV_PY="$(VENV)/Scripts/python.exe"; else VENV_PY="$(VENV)/bin/python"; fi; \
+	if [ ! -x "$$VENV_PY" ]; then echo "❌ Virtualenv not found. Run 'make setup' first."; exit 1; fi; \
+	echo "🚀 Starting bot manually..."; \
+	"$$VENV_PY" bot.py
 
 # --- Systemd controls ---
 start:
@@ -46,27 +56,34 @@ update:
 	@echo "⬇️  Pulling latest code..."
 	cd $(WORKDIR) && git pull
 	@echo "📦 Refreshing virtual environment..."
-	python3 -m venv $(VENV)
+	python3 -m venv "$(VENV)"
 	@echo "📦 Updating dependencies..."
-	. $(VENV)/bin/activate && pip install --upgrade -r requirements.txt
+	"$(VENV)/bin/python" -m pip install --upgrade -r requirements.txt
 	@echo "🔁 Restarting service..."
 	sudo systemctl restart $(SERVICE)
 	@echo "✅ Bot updated and restarted."
 
 # --- Local testing helpers ---
 test:
-	@if [ ! -d "$(VENV)" ]; then \
+	@set -e; \
+	if [ -d "$(VENV)/Scripts" ]; then VENV_PY="$(VENV)/Scripts/python.exe"; else VENV_PY="$(VENV)/bin/python"; fi; \
+	if [ ! -x "$$VENV_PY" ]; then \
 		echo "📦 Creating virtual environment..."; \
-		python3 -m venv $(VENV); \
-	fi
-	@echo "📦 Ensuring dependencies are installed..."
-	@if ! (. $(VENV)/bin/activate && pip install --upgrade -r requirements.txt); then \
+		rm -rf "$(VENV)"; \
+		if command -v py >/dev/null 2>&1; then PYTHON_CREATE="py -3"; \
+		elif command -v python3 >/dev/null 2>&1; then PYTHON_CREATE="python3"; \
+		elif command -v python >/dev/null 2>&1; then PYTHON_CREATE="python"; \
+		else echo "❌ Could not find python interpreter on PATH"; exit 1; fi; \
+		eval "$$PYTHON_CREATE -m venv \"$(VENV)\""; \
+		if [ -d "$(VENV)/Scripts" ]; then VENV_PY="$(VENV)/Scripts/python.exe"; else VENV_PY="$(VENV)/bin/python"; fi; \
+	fi; \
+	if [ ! -x "$$VENV_PY" ]; then echo "❌ Unable to locate virtualenv python at $$VENV_PY"; exit 1; fi; \
+	echo "📦 Ensuring dependencies are installed..."; \
+	if ! "$$VENV_PY" -m pip install --upgrade -r requirements.txt; then \
 		echo "⚠️ Could not update dependencies in virtual environment. Continuing with existing environment."; \
-	fi
-	@echo "🧪 Running tests..."
-	@if [ -x "$(VENV)/bin/pytest" ]; then \
-		. $(VENV)/bin/activate && pytest; \
-	else \
+	fi; \
+	echo "🧪 Running tests..."; \
+	if ! "$$VENV_PY" -m pytest; then \
 		echo "⚠️ Falling back to system pytest"; \
 		pytest; \
 	fi
