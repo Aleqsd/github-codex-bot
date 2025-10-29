@@ -17,18 +17,44 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-
 app = FastAPI()
 
+# --- Environment variables ---
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WATCH_USER = os.getenv("WATCH_USER", "GROBimbo")
 REPO = os.getenv("REPO", "Aleqsd/EDH-PodLog")
 PORT = int(os.getenv("PORT", 8082))
 
+# Pushover config
+PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER_KEY")
+PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN")
+
 openai.api_key = OPENAI_API_KEY
 
+
 # --------------- HELPERS ---------------
+
+
+def notify_pushover(title: str, message: str):
+    """Send push notification via Pushover."""
+    if not (PUSHOVER_USER_KEY and PUSHOVER_API_TOKEN):
+        logger.warning("⚠️ Pushover not configured, skipping notification.")
+        return
+    try:
+        requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={
+                "token": PUSHOVER_API_TOKEN,
+                "user": PUSHOVER_USER_KEY,
+                "title": title,
+                "message": message,
+            },
+            timeout=5,
+        )
+        logger.info("📱 Pushover notification sent.")
+    except Exception as e:
+        logger.error(f"❌ Pushover notification failed: {e}")
 
 
 def post_github_comment(issue_number: int, body: str):
@@ -41,9 +67,11 @@ def post_github_comment(issue_number: int, body: str):
     data = {"body": body}
     r = requests.post(url, json=data, headers=headers)
     if r.status_code not in [200, 201]:
-        print(f"❌ Failed to post comment: {r.status_code} {r.text}")
+        logger.error(f"❌ Failed to post comment: {r.status_code} {r.text}")
     else:
-        print(f"✅ Comment posted to issue #{issue_number}")
+        msg = f"✅ Comment posted to issue #{issue_number}"
+        logger.info(msg)
+        notify_pushover("Codex Bot", msg)
 
 
 def generate_codex_prompt(issue_text: str) -> str:
@@ -78,7 +106,7 @@ def generate_codex_prompt(issue_text: str) -> str:
         )
         return completion.choices[0].message.content.strip()  # type: ignore
     except Exception as e:
-        print("❌ OpenAI API error:", e)
+        logger.error(f"❌ OpenAI API error: {e}")
         return "⚠️ Failed to generate Codex prompt."
 
 
@@ -90,13 +118,11 @@ async def github_webhook(request: Request):
     payload = await request.json()
     event = request.headers.get("X-GitHub-Event", "ping")
 
-    # Debug
-    print(f"📬 Received event: {event}")
+    logger.info(f"📬 Received event: {event}")
 
     if event not in ["issues", "issue_comment"]:
         return {"msg": "ignored"}
 
-    # action = payload.get("action")
     sender = payload.get("sender", {}).get("login", "")
     issue = payload.get("issue", {})
     issue_number = issue.get("number")
@@ -106,12 +132,12 @@ async def github_webhook(request: Request):
 
     # Filter: only from WATCH_USER
     if sender != WATCH_USER:
-        print(f"🙅 Ignored event from {sender}")
+        logger.info(f"🙅 Ignored event from {sender}")
         return {"msg": "ignored"}
 
     # Determine text source
     text = comment if comment else f"{issue_title}\n\n{body}"
-    print(f"🧠 Processing issue #{issue_number} from {sender}")
+    logger.info(f"🧠 Processing issue #{issue_number} from {sender}")
 
     codex_prompt = generate_codex_prompt(text)
 
