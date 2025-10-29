@@ -36,19 +36,22 @@ openai.api_key = OPENAI_API_KEY
 # --------------- HELPERS ---------------
 
 
-def notify_pushover(title: str, message: str):
-    """Send push notification via Pushover."""
+def notify_pushover(issue_title: str, issue_number: int, message: str):
+    """Send push notification via Pushover with contextual GitHub issue link."""
     if not (PUSHOVER_USER_KEY and PUSHOVER_API_TOKEN):
         logger.warning("⚠️ Pushover not configured, skipping notification.")
         return
+    issue_url = f"https://github.com/{REPO}/issues/{issue_number}"
     try:
         requests.post(
             "https://api.pushover.net/1/messages.json",
             data={
                 "token": PUSHOVER_API_TOKEN,
                 "user": PUSHOVER_USER_KEY,
-                "title": title,
+                "title": issue_title,
                 "message": message,
+                "url": issue_url,
+                "url_title": f"View issue #{issue_number}",
             },
             timeout=5,
         )
@@ -57,7 +60,7 @@ def notify_pushover(title: str, message: str):
         logger.error(f"❌ Pushover notification failed: {e}")
 
 
-def post_github_comment(issue_number: int, body: str):
+def post_github_comment(issue_number: int, issue_title: str, body: str):
     """Post a comment to a GitHub issue."""
     url = f"https://api.github.com/repos/{REPO}/issues/{issue_number}/comments"
     headers = {
@@ -71,7 +74,7 @@ def post_github_comment(issue_number: int, body: str):
     else:
         msg = f"✅ Comment posted to issue #{issue_number}"
         logger.info(msg)
-        notify_pushover("Codex Bot", msg)
+        notify_pushover(issue_title, issue_number, msg)
 
 
 def generate_codex_prompt(issue_text: str) -> str:
@@ -82,17 +85,19 @@ def generate_codex_prompt(issue_text: str) -> str:
         "'Aleqsd/EDH-PodLog'. This repository manages Magic: The Gathering decks, users, matches, "
         "and deck synchronization.\n\n"
         "Your task:\n"
-        "- Rewrite the Product Owner message into a clear, complete Codex prompt.\n"
+        "- Rewrite the Product Owner message into a clear, comprehensive, and Codex-ready prompt.\n"
+        "- Preserve every requirement, constraint, data detail, and acceptance criterion from the Product Owner message.\n"
+        "- Expand terse descriptions so the resulting prompt is very detailed, leaving no ambiguity for the implementer.\n"
         "- Keep it fully in English.\n"
         "- Focus on what needs to be implemented (new features, changes, endpoints, data model updates).\n"
-        "- Avoid repetition or irrelevant context.\n"
+        "- Avoid repetition or irrelevant context beyond what is necessary to preserve meaning.\n"
         "- Output only the Codex prompt, ready to be pasted in terminal.\n"
         "\nExample output:\n"
         "Implement a new FastAPI endpoint `POST /decks/import` allowing users to import a deck from Moxfield. "
         "Use the existing `Deck` model in `models/deck.py`. Validate user authentication via `get_current_user()`. "
         "On success, return the new deck as JSON.\n\n"
         "---\n\n"
-        "Now rewrite this message from the Product Owner into such a Codex-ready prompt."
+        "Now rewrite this message from the Product Owner into such a Codex-ready prompt without omitting any detail."
     )
 
     try:
@@ -142,7 +147,7 @@ async def github_webhook(request: Request):
     codex_prompt = generate_codex_prompt(text)
 
     comment_body = f"🤖 **Prompt ready for Codex:**\n\n```\n{codex_prompt}\n```"
-    post_github_comment(issue_number, comment_body)
+    post_github_comment(issue_number, issue_title, comment_body)
 
     return {"msg": "processed"}
 
