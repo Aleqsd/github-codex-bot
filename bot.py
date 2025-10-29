@@ -221,12 +221,20 @@ async def github_webhook(request: Request):
     if event not in ["issues", "issue_comment"]:
         return {"msg": "ignored"}
 
+    action = payload.get("action")
     sender = payload.get("sender", {}).get("login", "")
     issue = payload.get("issue", {})
     issue_number = issue.get("number")
     issue_title = issue.get("title", "")
     body = issue.get("body", "")
     comment = payload.get("comment", {}).get("body")
+
+    if event == "issues" and action != "opened":
+        logger.info("✋ Ignored issues event action '%s' for issue #%s", action, issue_number)
+        return {"msg": "ignored"}
+    if event == "issue_comment" and action != "created":
+        logger.info("✋ Ignored issue_comment event action '%s' for issue #%s", action, issue_number)
+        return {"msg": "ignored"}
 
     # Filter: only from WATCH_USER
     if sender != WATCH_USER:
